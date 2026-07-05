@@ -69,6 +69,33 @@ impl From<SpircError> for Error {
     }
 }
 
+fn play_context_from_command_context(context: Context) -> Result<PlayContext, SpircError> {
+    let page_track_count = context
+        .pages
+        .iter()
+        .flat_map(|page| page.tracks.iter())
+        .filter(|track| matches!(track.uri, Some(ref uri) if !uri.is_empty()))
+        .count();
+
+    let expected_track_count = context
+        .metadata
+        .get("playlist_number_of_tracks")
+        .and_then(|count| count.parse::<usize>().ok());
+
+    let has_complete_page_tracks = page_track_count > 0
+        && expected_track_count
+            .map(|expected| expected == page_track_count)
+            .unwrap_or(true);
+
+    if has_complete_page_tracks {
+        Ok(PlayContext::Context(context))
+    } else if let Some(uri) = context.uri {
+        Ok(PlayContext::Uri(uri))
+    } else {
+        Err(SpircError::NoUri("context"))
+    }
+}
+
 struct SpircTask {
     player: Arc<Player>,
     mixer: Arc<dyn Mixer>,
@@ -1070,24 +1097,13 @@ impl SpircTask {
                 self.handle_transfer(transfer.data.expect("by condition checked"))?;
                 return self.notify().await;
             }
-            Play(mut play) => {
+            Play(play) => {
                 if !self.connect_state.is_active() {
                     self.handle_activate()
                 }
 
-                let context = match play.context.uri {
-                    Some(s) => PlayContext::Uri(s),
-                    None if !play.context.pages.is_empty() => PlayContext::Tracks(
-                        play.context
-                            .pages
-                            .iter()
-                            .cloned()
-                            .flat_map(|p| p.tracks)
-                            .flat_map(|t| t.uri)
-                            .collect(),
-                    ),
-                    None => Err(SpircError::NoUri("context"))?,
-                };
+                let page = play.context.pages.last().cloned();
+                let context = play_context_from_command_context(play.context)?;
 
                 let context_options = play
                     .options
@@ -1112,7 +1128,7 @@ impl SpircTask {
                             context_options,
                         },
                     },
-                    play.context.pages.pop(),
+                    page,
                     fallback_index,
                 )
                 .await?;
@@ -1363,6 +1379,7 @@ impl SpircTask {
                     .await?
             }
             PlayContext::Tracks(tracks) => self.load_context_from_tracks(tracks)?,
+            PlayContext::Context(context) => self.load_context_from_context(context)?,
         }
 
         let cmd_options = cmd.options;
@@ -1503,9 +1520,22 @@ impl SpircTask {
             ..Default::default()
         };
 
-        let _ = self
+        self.load_context_from_context(ctx)
+    }
+
+    fn load_context_from_context(&mut self, ctx: Context) -> Result<(), Error> {
+        let remaining = self
             .connect_state
             .update_context(ctx, ContextType::Default)?;
+
+        if let Some(remaining) = remaining {
+            self.context_resolver.add_list(
+                remaining
+                    .into_iter()
+                    .map(ResolveContext::append_context)
+                    .collect(),
+            );
+        }
 
         self.emit_set_queue_event();
 
@@ -1932,5 +1962,85 @@ impl SpircTask {
 impl Drop for SpircTask {
     fn drop(&mut self) {
         debug!("drop Spirc[{}]", self.spirc_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use librespot_protocol::context_track::ContextTrack;
+
+    fn context_page_with_tracks(uris: &[&str]) -> ContextPage {
+        let mut page = ContextPage::new();
+        page.tracks = uris
+            .iter()
+            .map(|uri| {
+                let mut track = ContextTrack::new();
+                track.uri = Some((*uri).to_string());
+                track
+            })
+            .collect();
+        page
+    }
+
+    #[test]
+    fn play_context_preserves_app_supplied_context_when_pages_have_tracks() {
+        let mut command_context = Context::new();
+        command_context.uri = Some("spotify:playlist:sorted-playlist".to_string());
+        command_context.url = Some("context://spotify:playlist:sorted-playlist".to_string());
+        command_context
+            .metadata
+            .insert("context_description".to_string(), "Scores".to_string());
+        command_context.pages = vec![context_page_with_tracks(&[
+            "spotify:track:sorted-first",
+            "spotify:track:sorted-second",
+        ])];
+
+        let context =
+            play_context_from_command_context(command_context).expect("context should be selected");
+
+        match context {
+            PlayContext::Context(context) => {
+                assert_eq!(
+                    context.uri.as_deref(),
+                    Some("spotify:playlist:sorted-playlist")
+                );
+                assert_eq!(
+                    context
+                        .metadata
+                        .get("context_description")
+                        .map(String::as_str),
+                    Some("Scores")
+                );
+                assert_eq!(
+                    context.pages[0].tracks[0].uri.as_deref(),
+                    Some("spotify:track:sorted-first")
+                );
+            }
+            PlayContext::Tracks(tracks) => panic!("expected full context, got tracks {tracks:?}"),
+            PlayContext::Uri(uri) => panic!("expected full context, got URI {uri}"),
+        }
+    }
+
+    #[test]
+    fn play_context_falls_back_to_uri_when_playlist_page_is_partial() {
+        let mut command_context = Context::new();
+        command_context.uri = Some("spotify:playlist:partial-page".to_string());
+        command_context
+            .metadata
+            .insert("playlist_number_of_tracks".to_string(), "609".to_string());
+        command_context.pages = vec![context_page_with_tracks(&[
+            "spotify:track:visible-window-first",
+            "spotify:track:visible-window-second",
+        ])];
+
+        let context =
+            play_context_from_command_context(command_context).expect("context should be selected");
+
+        match context {
+            PlayContext::Uri(uri) => assert_eq!(uri, "spotify:playlist:partial-page"),
+            PlayContext::Context(_) => panic!("expected URI fallback for partial playlist page"),
+            PlayContext::Tracks(tracks) => panic!("expected URI fallback, got tracks {tracks:?}"),
+        }
     }
 }

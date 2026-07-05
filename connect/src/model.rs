@@ -1,5 +1,6 @@
 use crate::{
-    core::dealer::protocol::SkipTo, protocol::context_player_options::ContextPlayerOptionOverrides,
+    core::dealer::protocol::SkipTo,
+    protocol::{context::Context, context_player_options::ContextPlayerOptionOverrides},
 };
 
 use std::ops::Deref;
@@ -23,6 +24,7 @@ impl Deref for LoadRequest {
 pub(super) enum PlayContext {
     Uri(String),
     Tracks(Vec<String>),
+    Context(Context),
 }
 
 /// The parameters for creating a load request
