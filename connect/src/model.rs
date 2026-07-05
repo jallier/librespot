@@ -23,6 +23,7 @@ impl Deref for LoadRequest {
 pub(super) enum PlayContext {
     Uri(String),
     Tracks(Vec<String>),
+    TracksWithUri { tracks: Vec<String>, uri: String },
 }
 
 /// The parameters for creating a load request

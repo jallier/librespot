@@ -37,7 +37,7 @@ pub(super) struct ResolveContext {
 }
 
 impl ResolveContext {
-    fn append_context(uri: impl Into<String>) -> Self {
+    pub fn append_context(uri: impl Into<String>) -> Self {
         Self {
             resolve: Resolve::Uri(uri.into()),
             fallback: None,

@@ -1071,23 +1071,63 @@ impl SpircTask {
                 return self.notify().await;
             }
             Play(mut play) => {
+                debug!(
+                    "received play command with context <{:?}>",
+                    play.context.uri
+                );
                 if !self.connect_state.is_active() {
                     self.handle_activate()
                 }
 
-                let context = match play.context.uri {
-                    Some(s) => PlayContext::Uri(s),
-                    None if !play.context.pages.is_empty() => PlayContext::Tracks(
-                        play.context
+                let expected_tracks = play
+                    .context
+                    .metadata
+                    .get("playlist_number_of_tracks")
+                    .and_then(|count| count.parse::<usize>().ok());
+
+                let actual_tracks = play
+                    .context
+                    .pages
+                    .iter()
+                    .flat_map(|page| page.tracks.iter())
+                    .filter(|track| matches!(track.uri, Some(ref uri) if !uri.is_empty()))
+                    .count();
+
+                let context;
+                if play.context.uri.is_some()
+                    && expected_tracks.is_some()
+                    && expected_tracks
+                        .map(|expected| expected == actual_tracks)
+                        .unwrap_or(false)
+                {
+                    context = PlayContext::TracksWithUri {
+                        tracks: play
+                            .context
                             .pages
                             .iter()
                             .cloned()
                             .flat_map(|p| p.tracks)
                             .flat_map(|t| t.uri)
                             .collect(),
-                    ),
-                    None => Err(SpircError::NoUri("context"))?,
+                        uri: play.context.uri.unwrap_or_default(),
+                    }
+                } else {
+                    context = match play.context.uri {
+                        Some(s) => PlayContext::Uri(s),
+                        None if !play.context.pages.is_empty() => PlayContext::Tracks(
+                            play.context
+                                .pages
+                                .iter()
+                                .cloned()
+                                .flat_map(|p| p.tracks)
+                                .flat_map(|t| t.uri)
+                                .collect(),
+                        ),
+                        None => Err(SpircError::NoUri("context"))?,
+                    }
                 };
+
+                debug!("matched context <{:?}>", context);
 
                 let context_options = play
                     .options
@@ -1363,6 +1403,9 @@ impl SpircTask {
                     .await?
             }
             PlayContext::Tracks(tracks) => self.load_context_from_tracks(tracks)?,
+            PlayContext::TracksWithUri { tracks, uri } => {
+                self.load_context_from_tracks_with_uri(tracks, uri)?;
+            }
         }
 
         let cmd_options = cmd.options;
@@ -1489,6 +1532,42 @@ impl SpircTask {
             let context = self.context_resolver.get_next_context(Vec::new).await;
             self.handle_next_context(context);
         }
+
+        Ok(())
+    }
+
+    fn load_context_from_tracks_with_uri(
+        &mut self,
+        tracks: impl Into<ContextPage>,
+        uri: String,
+    ) -> Result<(), Error> {
+        // const WEB_API_URI: &str = "spotify:web-api";
+        let ctx = Context {
+            // by providing values for uri/url the player in the official client's isn't frozen
+            uri: Some(uri.clone()),
+            url: Some(format!("context://{uri}")),
+            pages: vec![tracks.into()],
+            ..Default::default()
+        };
+
+        debug!("loading context from tracks, with {} ctx", ctx);
+
+        let remaining = self
+            .connect_state
+            .update_context(ctx, ContextType::Default)?;
+
+        debug!("remaining tracks after update_context: {:?}", remaining);
+
+        if let Some(remaining) = remaining {
+            self.context_resolver.add_list(
+                remaining
+                    .into_iter()
+                    .map(ResolveContext::append_context)
+                    .collect(),
+            );
+        }
+
+        self.emit_set_queue_event();
 
         Ok(())
     }
