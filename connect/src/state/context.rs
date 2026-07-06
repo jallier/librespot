@@ -399,7 +399,16 @@ impl ConnectState {
     pub fn merge_context(&mut self, new_page: Option<ContextPage>) -> Option<()> {
         let current_context = self.get_context_mut(ContextType::Default).ok()?;
 
-        for new_track in new_page?.tracks {
+        let new_page = match new_page {
+            Some(new_page) => new_page,
+            None => {
+                debug!("merge_context: no page to merge, leaving current tracks untouched");
+                return None;
+            }
+        };
+
+        let mut merged = 0;
+        for new_track in new_page.tracks {
             if new_track.uri.is_none() || matches!(new_track.uri, Some(ref uri) if uri.is_empty()) {
                 continue;
             }
@@ -420,8 +429,12 @@ impl ConnectState {
                 {
                     context_track.uid = new_track.uid.unwrap_or_default();
                 }
+
+                merged += 1;
             }
         }
+
+        debug!("merge_context: matched and merged metadata for {merged} track(s)");
 
         Some(())
     }

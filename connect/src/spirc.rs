@@ -1056,7 +1056,22 @@ impl SpircTask {
                         update_context.context.uri,
                         self.connect_state.context_uri()
                     )
+                } else if update_context
+                    .context
+                    .pages
+                    .iter()
+                    .all(|p| p.tracks.is_empty())
+                {
+                    debug!(
+                        "ignoring context update for <{:?}>, it carries no tracks and the current context is unchanged",
+                        update_context.context.uri
+                    )
                 } else {
+                    debug!(
+                        "queuing context update for <{:?}> with {} page(s)",
+                        update_context.context.uri,
+                        update_context.context.pages.len()
+                    );
                     self.context_resolver.add(ResolveContext::from_context(
                         update_context.context,
                         ContextType::Default,

@@ -214,10 +214,22 @@ impl ContextResolver {
 
         match next.update {
             ContextType::Default => {
+                debug!("fetching context fresh from spclient for uri <{resolve_uri}>");
                 let mut ctx = self.session.spclient().get_context(resolve_uri).await;
-                if let Ok(ctx) = ctx.as_mut() {
-                    ctx.uri = Some(next.context_uri().to_string());
-                    ctx.url = ctx.uri.as_ref().map(|s| format!("context://{s}"));
+                match ctx.as_mut() {
+                    Ok(ctx) => {
+                        ctx.uri = Some(next.context_uri().to_string());
+                        ctx.url = ctx.uri.as_ref().map(|s| format!("context://{s}"));
+
+                        let track_count: usize =
+                            ctx.pages.iter().map(|p| p.tracks.len()).sum();
+                        debug!(
+                            "fetched context <{:?}> with {track_count} track(s) across {} page(s)",
+                            ctx.uri,
+                            ctx.pages.len()
+                        );
+                    }
+                    Err(why) => debug!("failed fetching context <{resolve_uri}>: {why}"),
                 }
 
                 ctx
